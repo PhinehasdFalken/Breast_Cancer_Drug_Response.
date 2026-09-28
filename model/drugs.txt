@@ -1,0 +1,10 @@
+5-Fluorouracil
+Cisplatin
+Docetaxel
+Epirubicin
+Fulvestrant
+Gemcitabine
+Lapatinib
+Olaparib
+Paclitaxel
+Palbociclib
