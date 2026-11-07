@@ -1,0 +1,10 @@
+{
+  "threshold": 0.5506716966629028,
+  "uses_subtype": true,
+  "image_size": 128,
+  "patients": {
+    "train": 881,
+    "val": 131,
+    "test": 128
+  }
+}

@@ -1,0 +1,20 @@
+# Virtual environment (Streamlit Cloud builds its own)
+venv/
+
+# Python cache files
+__pycache__/
+*.pyc
+
+# Raw downloads: large, and the app never reads them
+data/raw/
+
+# Streamlit secrets, if you ever add any
+.streamlit/secrets.toml
+
+# Editor and OS clutter
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+Claude outputs

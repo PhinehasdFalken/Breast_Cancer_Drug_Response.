@@ -1,0 +1,21 @@
+# Visual theme for the app. Colours are taken from H&E staining, the purple
+# (haematoxylin) and pink (eosin) of breast cancer pathology slides.
+
+[theme]
+base = "light"
+primaryColor = "#5B45A8"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F4F2FA"
+borderColor = "#DED9EE"
+chartCategoricalColors = ["#5B45A8", "#D65A8C", "#2E8B84", "#E3A33B"]
+baseRadius = "0.6rem"
+# Info boxes in soft violet, to match the accent
+blueBackgroundColor = "#EFEBFA"
+blueTextColor = "#3F3080"
+
+[theme.sidebar]
+backgroundColor = "#2B2354"
+secondaryBackgroundColor = "#3A3170"
+textColor = "#EEEBF8"
+primaryColor = "#F2A1C0"
+borderColor = "#4B4288"

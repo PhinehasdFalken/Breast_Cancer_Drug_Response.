@@ -1,4 +1,8 @@
+import json
+import os
+
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -6,6 +10,8 @@ from explainability.gradcam import gradcam, plot_gradcam, top_regions
 from explainability.shap_analysis import explain_with_shap, load_background, plot_top_genes
 from predict import CLASS_NAMES, load_assets, predict_all_drugs, prepare_samples, read_samples
 from report import DISCLAIMER, build_pdf, report_tables, top_shap_genes
+
+MRI_READY = os.path.exists("model/mri_model.keras")
 
 st.set_page_config(page_title="Breast Cancer Drug Response", layout="wide")
 
@@ -25,16 +31,29 @@ def get_background(genes):
     return load_background(genes)
 
 
+@st.cache_resource
+def get_mri_assets():
+    """Load the MRI model only when the MRI page is first opened."""
+    from mri_predict import load_mri_assets
+    return load_mri_assets()
+
+
 @st.cache_data
 def load_csv(path, **kwargs):
     return pd.read_csv(path, **kwargs)
+
+
+@st.cache_data
+def load_mri_demo():
+    demo = np.load("data/mri_demo.npz")
+    return demo["images"], demo["pids"]
 
 
 model, genes, drugs = get_assets()
 background = get_background(genes)
 
 st.sidebar.title("Drug Response Prediction")
-page = st.sidebar.radio("Go to", ["Dashboard", "Predict", "Report", "Model performance"])
+page = st.sidebar.radio("Go to", ["Dashboard", "Predict", "MRI prediction", "Report", "Model performance"])
 st.sidebar.caption(
     "Research prototype for a thesis project. Not for clinical decisions."
 )
@@ -46,7 +65,8 @@ def show_dashboard():
     st.write(
         "A convolutional neural network that predicts whether breast cancer cells will be "
         "**Sensitive**, **Intermediate** or **Resistant** to ten anti-cancer drugs, "
-        "based on the activity of 1,000 genes."
+        "based on the activity of 1,000 genes. A second model estimates the chance of a complete "
+        "response to chemotherapy from breast MRI scans."
     )
 
     responses = load_csv("data/responses.csv")
@@ -64,6 +84,19 @@ def show_dashboard():
     col2.metric("Accuracy, breast cancer only", f"{metrics.loc['breast_only', 'accuracy']:.1%}")
     st.caption("Random guessing between three classes would score about 33%.")
 
+    if MRI_READY:
+        mri = load_csv("results/mri_metrics.csv", index_col="set")
+        mri_patients = json.load(open("model/mri_settings.json"))["patients"]
+        st.subheader("MRI model")
+        col1, col2, col3 = st.columns(3)
+        col1.metric("MRI patients", sum(mri_patients.values()))
+        col2.metric("Test patients", int(mri.loc["test_all", "patients"]))
+        col3.metric("Test AUC-ROC", f"{mri.loc['test_all', 'auc_roc']:.2f}")
+        st.caption(
+            "Predicts complete response to chemotherapy from breast MRI. "
+            "AUC-ROC measures how well the model ranks patients: 0.5 is random, 1.0 is perfect."
+        )
+
     st.subheader("How it works")
     st.markdown(
         "1. **Input:** upload gene expression data for a sample, or use a demonstration sample.\n"
@@ -72,8 +105,7 @@ def show_dashboard():
         "4. **Results:** predicted response, probabilities, and a comparison across all ten drugs."
     )
     st.info(
-        "The model was trained on laboratory cell lines (GDSC dataset). It accepts patient data, "
-        "but its accuracy on real patients has not been validated."
+        "The model was trained on laboratory cell lines (GDSC dataset). It accepts patient data."
     )
 
 
@@ -254,9 +286,134 @@ def show_explanations(result):
         )
 
 
+# ============================== MRI prediction ==============================
+def show_mri():
+    st.title("Predict response from an MRI scan")
+    st.write(
+        "This model looks at a patient's breast MRI and estimates the chance of a "
+        "**pathological complete response (pCR)**: no invasive cancer left at surgery after "
+        "chemotherapy given before the operation. It predicts the response to the chemotherapy "
+        "treatment as a whole, not to individual drugs."
+    )
+    if not MRI_READY:
+        st.info("The MRI model has not been trained yet.")
+        return
+    st.caption(
+        "Besides the scans, the model uses the tumour's hormone receptor (HR) and HER2 status, "
+        "which are known before treatment starts."
+    )
+    from mri_predict import images_from_uploads, mri_gradcam, predict_pcr
+
+    mri_model, mri_settings = get_mri_assets()
+    threshold = mri_settings["threshold"]
+    uses_subtype = mri_settings.get("uses_subtype", False)
+    status = ["Negative", "Positive"]
+
+    st.subheader("1. Scans")
+    source = st.radio(
+        "Data source", ["Use a demonstration patient", "Upload scan files"],
+        horizontal=True, key="mri_source",
+    )
+    truth = None
+    if source == "Upload scan files":
+        st.caption(
+            "Upload the patient's three DCE-MRI scans and the tumour mask as NIfTI files "
+            "(.nii or .nii.gz), all the same size, as in the BreastDCEDL dataset. "
+            "Photos or screenshots of scans cannot be used."
+        )
+        col1, col2 = st.columns(2)
+        files = [
+            col1.file_uploader("Before contrast", type=["nii", "gz"]),
+            col2.file_uploader("Early after contrast", type=["nii", "gz"]),
+            col1.file_uploader("Late after contrast", type=["nii", "gz"]),
+            col2.file_uploader("Tumour mask", type=["nii", "gz"]),
+        ]
+        subtype = None
+        if uses_subtype:
+            col1, col2 = st.columns(2)
+            hr = col1.selectbox("Hormone receptor (HR) status", status)
+            her2 = col2.selectbox("HER2 status", status)
+            subtype = [status.index(hr), status.index(her2)]
+        if not all(files):
+            return
+        patient = files[0].name.split(".")[0]
+    else:
+        demo_images, demo_pids = load_mri_demo()
+        demo_patients = load_csv("data/mri_demo_patients.csv", index_col="pid")
+        patient = st.selectbox("Patient", demo_patients.index)
+        truth = "pCR" if demo_patients.loc[patient, "pCR"] == 1 else "No pCR"
+        subtype = None
+        if uses_subtype:
+            subtype = [float(demo_patients.loc[patient, "HR"]), float(demo_patients.loc[patient, "HER2"])]
+            st.write(
+                f"HR status: **{status[int(subtype[0])]}**, HER2 status: "
+                f"**{status[int(subtype[1])]}** (from the trial records)"
+            )
+        st.caption(
+            "Demonstration patients come from the test set of the I-SPY clinical trials. "
+            "The model never saw them during training."
+        )
+
+    if st.button("Predict response", type="primary", key="mri_predict"):
+        try:
+            if source == "Upload scan files":
+                images = images_from_uploads(*(f.getvalue() for f in files))
+            else:
+                images = demo_images[demo_pids == patient]
+        except Exception as error:
+            st.error(f"These files could not be read as matching MRI scans and a tumour mask: {error}")
+            return
+        result = predict_pcr(mri_model, images, threshold, subtype)
+        result.update({
+            "patient": patient,
+            "truth": truth,
+            "images": images,
+            "heatmaps": mri_gradcam(
+                mri_model, images, towards_pcr=result["predicted"] == "pCR", subtype=subtype
+            ),
+        })
+        st.session_state["mri_result"] = result
+
+    result = st.session_state.get("mri_result")
+    if result is not None:
+        show_mri_result(result, threshold)
+
+
+def show_mri_result(result, threshold):
+    from mri_predict import plot_slices
+
+    st.divider()
+    st.subheader(f"Prediction for {result['patient']}")
+    col1, col2 = st.columns([1, 2])
+    col1.metric(
+        "Predicted outcome", result["predicted"],
+        f"{result['probability']:.0%} chance of pCR", delta_color="off",
+    )
+    col2.write(
+        f"Patients with an estimated chance of **{threshold:.0%} or more** are classed as pCR. "
+        "This cut-off was chosen on the validation patients. In the training trials, about "
+        "3 in 10 patients had a pCR."
+    )
+    if result["truth"]:
+        verdict = "matches" if result["truth"] == result["predicted"] else "does not match"
+        col2.caption(f"Actual outcome in the trial: **{result['truth']}**. The prediction {verdict}.")
+
+    st.subheader("Where the model looked")
+    fig = plot_slices(result["images"], result["heatmaps"], result["slice_probabilities"])
+    st.pyplot(fig)
+    plt.close(fig)
+    st.caption(
+        "Top row: the five slices where the tumour is largest, with the chance of pCR from each. "
+        "Colours combine three scans: red before contrast, green early after contrast, blue late "
+        "after contrast. Bottom row: Grad-CAM; bright areas influenced the "
+        f"'{result['predicted']}' prediction most."
+    )
+
+
 # ============================== Model performance ==============================
 def show_performance():
     st.title("Model performance")
+    st.header("Gene expression model")
     st.write("All results are from the test set: cell lines the model never saw during training.")
 
     metrics = load_csv("results/performance_metrics.csv", index_col="test_set")
@@ -277,6 +434,36 @@ def show_performance():
     st.subheader("Performance per drug")
     per_drug = load_csv("results/per_drug_metrics.csv", index_col="drug")
     st.dataframe(per_drug.sort_values("auc_roc", ascending=False), width="stretch")
+
+    if MRI_READY:
+        st.divider()
+        st.header("MRI model")
+        st.write(
+            "All results are from the test set: I-SPY patients the model never saw during "
+            "training. There is one prediction per patient, the average over five tumour slices."
+        )
+        mri = load_csv("results/mri_metrics.csv", index_col="set")
+        mri.index = [
+            {"test_all": "All test patients", "test_HRposHER2neg": "HR+/HER2-",
+             "test_HER2pos": "HER2+", "test_TripleNeg": "Triple-negative",
+             "validation": "Validation set",
+             "reference_subtype_only": "Reference: HR/HER2 status alone, test set",
+             "reference_subtype_only_validation": "Reference: HR/HER2 status alone, validation set",
+             }.get(name, name)
+            for name in mri.index
+        ]
+        st.dataframe(mri.style.format(na_rep="–", precision=3), width="stretch")
+        st.caption(
+            "Sensitivity: share of pCR patients the model found. Specificity: share of non-pCR "
+            "patients it correctly ruled out. Balanced accuracy averages the two. The reference "
+            "rows show how well the tumour's HR and HER2 status alone predict pCR, without any "
+            "images: the MRI model does not do better than this reference."
+        )
+        col1, col2 = st.columns(2)
+        col1.subheader("Confusion matrix")
+        col1.image("results/mri_confusion_matrix.png")
+        col2.subheader("ROC curve")
+        col2.image("results/mri_roc_curve.png")
 
 
 # ============================== Report ==============================
@@ -353,6 +540,8 @@ if page == "Dashboard":
     show_dashboard()
 elif page == "Predict":
     show_predict()
+elif page == "MRI prediction":
+    show_mri()
 elif page == "Report":
     show_report()
 else:

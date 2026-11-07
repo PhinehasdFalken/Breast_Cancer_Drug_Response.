@@ -1,0 +1,8 @@
+set,patients,pcr_patients,auc_roc,accuracy,balanced_accuracy,sensitivity,specificity
+test_all,128.0,41.0,0.649,0.664,0.624,0.512,0.736
+test_HRposHER2neg,53.0,8.0,0.603,0.83,0.54,,
+test_HER2pos,31.0,14.0,0.525,0.581,0.574,,
+test_TripleNeg,44.0,19.0,0.516,0.523,0.542,,
+validation,131.0,,0.672,,,,
+reference_subtype_only,128.0,,0.694,,,,
+reference_subtype_only_validation,131.0,,0.68,,,,
